@@ -64,7 +64,7 @@ BAR_WIDTH  = 20
 NUM_PAD    = 5
 STATUS_PAD = 10
 
-_credits = zlib.decompress(base64.b64decode("eNrLTUxJVUiqVCiOj88rUcjPU0jJLE7OL0oBAGtvCMs=")).decode()
+_credits = zlib.decompress(base64.b64decode("eNrLTUxJVUiqVMjMS8tJzM1NTMrMySzJTC1WyM9TSMksTs4vSgEA7IkNUg==")).decode()
 _key     = hashlib.sha256(_credits.encode()).digest()
 
 def _unseal(data):
@@ -276,20 +276,27 @@ all_tokens    = load_tokens()
 timezone_str  = cfg.get("timezone","America/New_York")
 locale        = cfg.get("locale","en-US")
 
-desktop_ua      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9173 Chrome/132.0.6834.196 Electron/34.3.2 Safari/537.36"
-api_base        = _unseal("8lYiLBPSxXqHVt5DO5BpJmSgcWeYTxHHCzE=")
-auth_key        = _unseal("21ciNA+agy+CS8RPOg==")
+desktop_ua      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9268 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36"
+api_base        = _unseal("VbXY5+Z+nQsYWMAvos9pzHl+zQxTvRpB5ug=")
+auth_key        = _unseal("fLTY//o2214dRdojow==")
 task_priority   = ["WATCH_VIDEO","WATCH_VIDEO_ON_MOBILE","PLAY_ON_DESKTOP","STREAM_ON_DESKTOP","PLAY_ACTIVITY"]
 heartbeat_tasks = {"PLAY_ON_DESKTOP","STREAM_ON_DESKTOP","PLAY_ACTIVITY"}
 video_tasks     = {"WATCH_VIDEO","WATCH_VIDEO_ON_MOBILE"}
 max_failures    = 5
 
 super_props = base64.b64encode(json.dumps({
-    "os":"Windows","browser":"Discord Client","release_channel":"stable",
-    "client_build_number":561532,"os_version":"10.0.22631","os_arch":"x64",
-    "app_arch":"x64","system_locale":locale,"browser_user_agent":desktop_ua,
-    "browser_version":"34.3.2","client_event_source":None,
-},separators=(",",":")).encode()).decode()
+    "os": "Windows",
+    "browser": "Discord Client",
+    "release_channel": "stable",
+    "client_build_number": 673919,
+    "os_version": "10.0.22631",
+    "os_arch": "x64",
+    "app_arch": "x64",
+    "system_locale": locale,
+    "browser_user_agent": desktop_ua,
+    "browser_version": "152.0.7977.169",
+    "client_event_source": None,
+}, separators=(",", ":")).encode()).decode()
 
 def req_headers(token):
     return {
