@@ -1,77 +1,259 @@
-import asyncio,base64,json,os,random,sys,time
+import asyncio,base64,hashlib,importlib,importlib.metadata as _md,json,os,random,re,shutil,subprocess,sys,time,zlib
 from datetime import datetime, timezone
-import aiohttp,colorama,discord
-from colorama import Fore,Style
 
-colorama.init(autoreset=True)
+def _has(name):
+    for n in {name,name.replace(".","-"),name.replace(".","_"),name.replace("-","_")}:
+        try:
+            _md.version(n);return True
+        except _md.PackageNotFoundError:
+            continue
+    return False
 
-clr_ok    = Fore.GREEN
-clr_warn  = Fore.YELLOW
-clr_err   = Fore.RED
-clr_dim   = Style.DIM+Fore.WHITE
-clr_reset = Style.RESET_ALL
+def _pip(*args):
+    return subprocess.run([sys.executable,"-m","pip",*args,"--disable-pip-version-check","-q"]).returncode==0
 
-grad_bar  = ["\033[38;2;255;80;80m","\033[38;2;255;150;0m","\033[38;2;255;220;0m","\033[38;2;150;220;0m","\033[38;2;80;200;80m"]
-grad_acct = ["\033[38;2;189;147;249m","\033[38;2;139;233;253m","\033[38;2;255;184;108m","\033[38;2;255;121;198m","\033[38;2;80;250;123m","\033[38;2;241;250;140m"]
+def _bootstrap():
+    required=["aiohttp","colour","discord.py-self"]
+    conflict=_has("discord.py")
+    missing=[p for p in required if not _has(p)]
+    if not conflict and not missing:return
+    if conflict:
+        print("discord.py is installed and conflicts with discord.py-self (both provide the 'discord' module), so it is being removed.")
+        if not _pip("uninstall","-y","discord.py"):
+            print("Failed to uninstall discord.py, please run: pip uninstall discord.py");sys.exit(1)
+        if not _pip("install","--force-reinstall","--no-deps","discord.py-self"):
+            print("Failed to install discord.py-self, please run: pip install discord.py-self");sys.exit(1)
+    print("Installing required packages: "+", ".join(missing if missing else ["discord.py-self"]))
+    if not _pip("install",*required):
+        print("Package installation failed, please run: pip install "+" ".join(required));sys.exit(1)
+    importlib.invalidate_caches()
+    print("Packages ready.\n")
 
-NAME_PAD  = 28
-_credits  = (chr(109)+chr(117^20)+chr(12<<3|4)+chr(122-21)+chr(14+18)+chr(98)+chr(78^55)+chr(4<<3|0)+chr(141-26)+chr(92+3)+chr(95)+chr(52^90)+chr(14<<3|4)+chr(63-31)+chr(93+18)+chr(110)+chr(93^125)+chr(12<<3|4)+chr(141-36)+chr(112+3)+chr(99)+chr(207^160)+chr(14<<3|2)+chr(101-1))
+_bootstrap()
 
-BANNER = (
-    f"\n"
-    f"{grad_bar[0]}  ██████╗ ██╗   ██╗███████╗███████╗████████╗\n"
-    f"{grad_bar[0]}  ██╔══██╗██║   ██║██╔════╝██╔════╝╚══██╔══╝\n"
-    f"{grad_bar[1]}  ██║  ██║██║   ██║█████╗  ███████╗   ██║\n"
-    f"{grad_bar[2]}  ██║  ██║██║   ██║██╔══╝  ╚════██║   ██║\n"
-    f"{grad_bar[3]}  ██████╔╝╚██████╔╝███████╗███████║   ██║\n"
-    f"{grad_bar[4]}  ╚═════╝  ╚═════╝ ╚══════╝╚══════╝   ╚═╝\n"
-    f"{clr_dim}         Discord Quest Completer\n"
-    f"         {_credits}{clr_reset}\n"
-)
+import aiohttp,discord
+from colour import Color
+
+def _enable_vt():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    if os.name=="nt":
+        try:
+            import ctypes
+            k=ctypes.windll.kernel32;h=k.GetStdHandle(-11);m=ctypes.c_ulong()
+            k.GetConsoleMode(h,ctypes.byref(m));k.SetConsoleMode(h,m.value|4)
+        except Exception:
+            pass
+
+_enable_vt()
+
+clr_ok    = "\033[38;2;214;170;255m"
+clr_warn  = "\033[38;2;255;190;90m"
+clr_err   = "\033[38;2;255;100;120m"
+clr_dim   = "\033[38;2;128;112;165m"
+clr_reset = "\033[0m"
+
+grad_stops = [(112,62,214),(147,80,240),(182,110,250),(214,150,255),(240,205,255)]
+grad_acct  = ["\033[38;2;196;148;255m","\033[38;2;132;144;255m","\033[38;2;232;121;249m","\033[38;2;168;110;240m","\033[38;2;255;150;220m","\033[38;2;120;190;255m"]
+
+NAME_PAD   = 28
+TAG_PAD    = 12
+BAR_WIDTH  = 20
+NUM_PAD    = 5
+STATUS_PAD = 10
+
+_credits = zlib.decompress(base64.b64decode("eNrLTUxJVUiqVCiOj88rUcjPU0jJLE7OL0oBAGtvCMs=")).decode()
+_key     = hashlib.sha256(_credits.encode()).digest()
+
+def _unseal(data):
+    return bytes(b^_key[i%len(_key)] for i,b in enumerate(base64.b64decode(data))).decode()
+
+ansi_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+tty     = sys.stdout.isatty()
+live_on = False
+drawn   = 0
+pending = False
+
+def write(s):
+    sys.stdout.write(s);sys.stdout.flush()
+
+def ansi(rgb):
+    return "\033[38;2;%d;%d;%dm"%rgb
+
+def build_ramp(stops,steps=64):
+    ramp=[]
+    for a,b in zip(stops,stops[1:]):
+        ca=Color(rgb=tuple(v/255 for v in a))
+        cb=Color(rgb=tuple(v/255 for v in b))
+        seg=[tuple(min(255,max(0,int(round(c*255)))) for c in col.rgb) for col in ca.range_to(cb,steps)]
+        ramp.extend(seg if not ramp else seg[1:])
+    return ramp
+
+ramp = build_ramp(grad_stops)
+
+def ramp_at(t):
+    t=max(0.,min(t,1.))
+    return ramp[int(t*(len(ramp)-1)+0.5)]
+
+def grad_text(text,width=None):
+    n=max((width or len(text))-1,1)
+    return "".join(ansi(ramp_at(i/n))+ch if ch!=" " else ch for i,ch in enumerate(text))+clr_reset
+
+icon_info = ansi(ramp_at(0.5))
+icon_ok   = ansi(ramp_at(1.0))
+icon_warn = clr_warn
+icon_err  = clr_err
+
+_banner_lines = [
+    ".▄▄▄  ▄• ▄▌▄▄▄ ..▄▄ · ▄▄▄▄▄",
+    "▐▀•▀█ █▪██▌▀▄.▀·▐█ ▀. •██  ",
+    "█▌·.█▌█▌▐█▌▐▀▀▪▄▄▀▀▀█▄ ▐█.▪",
+    "▐█▪▄█·▐█▄█▌▐█▄▄▌▐█▄▪▐█ ▐█▌·",
+    "·▀▀█.  ▀▀▀  ▀▀▀  ▀▀▀▀  ▀▀▀ ",
+]
+_banner_width = max(len(l) for l in _banner_lines)
+_subtitle     = "Discord Quest Completer"
+
+def centered(text,width,cols):
+    return " "*max((cols-width)//2,0)+text
+
+def build_banner():
+    cols=shutil.get_terminal_size((120,30)).columns
+    art=[centered(grad_text(l,_banner_width),_banner_width,cols) for l in _banner_lines]
+    sub=centered(clr_dim+_subtitle+clr_reset,len(_subtitle),cols)
+    cred=centered(grad_text(_credits),len(_credits),cols)
+    return "\n"+"\n".join(art)+"\n"+sub+"\n"+cred+"\n"
 
 def fmt_name(name):
-    return (name[:NAME_PAD-1]+"...") if len(name)>NAME_PAD else name.ljust(NAME_PAD)
+    return (name[:NAME_PAD-3]+"...") if len(name)>NAME_PAD else name.ljust(NAME_PAD)
 
-def fmt_bar(pct,width=20):
+def fmt_bar(pct,width=BAR_WIDTH):
     filled=round(pct*width)
-    bar="".join(grad_bar[int(i/max(width-1,1)*(len(grad_bar)-1))]+"#" for i in range(filled))
+    bar="".join(ansi(ramp_at(i/max(width-1,1)))+"#" for i in range(filled))
     return bar+clr_dim+"-"*(width-filled)+clr_reset
 
-def ts():
-    return clr_dim+datetime.now().strftime("%H:%M:%S")+clr_reset
+def ts(at=None):
+    return clr_dim+(at or datetime.now()).strftime("%H:%M:%S")+clr_reset
 
 def pfx(tag,col):
-    return f"{col}[{tag}]{clr_reset}"
+    if not tag:return " "*(TAG_PAD+2)
+    return f"{col}[{tag[:TAG_PAD].ljust(TAG_PAD)}]{clr_reset}"
+
+rows       = {}
+acct_order = []
+
+status_style = {"done":clr_ok,"failed":clr_err}
+
+def crop(line,cols):
+    res=[];vis=0;i=0
+    while i<len(line):
+        m=ansi_re.match(line,i)
+        if m:
+            res.append(m.group());i=m.end();continue
+        if vis<cols:
+            res.append(line[i]);vis+=1
+        i+=1
+    return "".join(res)+clr_reset
+
+def render_row(r):
+    cur,tgt=r["cur"],r["tgt"]
+    pct=min(cur/tgt,1.) if tgt else 1.
+    status=r["status"]
+    if status is None:
+        rem=max(0,tgt-cur)
+        cell=clr_dim+f"{int(rem//60):>3}:{int(rem%60):02d} left".ljust(STATUS_PAD)+clr_reset
+    else:
+        cell=status_style.get(status,clr_dim)+status.ljust(STATUS_PAD)+clr_reset
+    nums=f"{int(cur):>{NUM_PAD}}/{str(int(tgt))+'s':<{NUM_PAD+1}}"
+    return f"{ts(r['at'])}  {pfx(r['tag'],r['col'])}  {r['icon_col']}{r['icon']}{clr_reset}  {fmt_name(r['name'])}  {fmt_bar(pct)}  {clr_dim}{int(pct*100):>3}%  {nums}{clr_reset}  {cell}"
+
+def sorted_rows():
+    order={t:i for i,t in enumerate(acct_order)}
+    return sorted(list(rows.values()),key=lambda r:order.get(r["tag"],0))
+
+def clear_region():
+    global drawn
+    if drawn:write(f"\033[{drawn}A\r\033[J")
+    drawn=0
+
+def draw_region():
+    global drawn
+    cols=max(shutil.get_terminal_size((120,30)).columns-1,20)
+    lines=[crop(render_row(r),cols) for r in sorted_rows()]
+    if lines:write("".join(l+"\n" for l in lines))
+    drawn=len(lines)
+
+def out(line=""):
+    if live_on and tty:
+        clear_region();write(line+clr_reset+"\n");draw_region()
+    else:
+        write(line+clr_reset+"\n")
+
+def refresh():
+    global pending
+    pending=False
+    if live_on and tty:
+        clear_region();draw_region()
+
+def notify(r):
+    global pending
+    if not tty:
+        out(render_row(r));return
+    if pending:return
+    pending=True
+    asyncio.get_running_loop().call_later(0.1,refresh)
+
+def live_start():
+    global live_on
+    live_on=True
+    if tty:
+        write("\033[?25l");draw_region()
+
+def live_stop():
+    global live_on
+    if tty and live_on:
+        clear_region();draw_region();write("\033[?25h")
+    live_on=False
+
+def emit(icon,icon_col,body,tag="",col=""):
+    out(f"{ts()}  {pfx(tag,col)}  {icon_col}{icon}{clr_reset}  {body}")
 
 def log_info(msg,tag="",col=""):
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {grad_bar[3]}  >  {clr_reset}{msg}")
+    emit(">",icon_info,msg,tag,col)
 
 def log_ok(msg,tag="",col=""):
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {clr_ok}  +  {clr_reset}{msg}")
+    emit("+",icon_ok,msg,tag,col)
 
 def log_warn(msg,tag="",col=""):
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {clr_warn}  !  {clr_reset}{msg}")
+    emit("!",icon_warn,msg,tag,col)
 
 def log_err(msg,tag="",col=""):
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {clr_err}  x  {clr_reset}{msg}")
+    emit("x",icon_err,msg,tag,col)
+
+def set_row(name,cur,tgt,icon,icon_col,tag,col):
+    r=rows.get((tag,name))
+    if r is None:
+        r=rows[(tag,name)]={"status":None,"cur":None,"tgt":None}
+        if tag not in acct_order:acct_order.append(tag)
+    changed=r["cur"]!=cur or r["tgt"]!=tgt
+    r.update(name=name,cur=cur,tgt=tgt,icon=icon,icon_col=icon_col,tag=tag,col=col)
+    if changed:
+        r["at"]=datetime.now();notify(r)
+
+def mark(name,status,tag="",col=""):
+    r=rows.get((tag,name))
+    if not r or r["status"]==status:return
+    r["status"]=status;r["at"]=datetime.now()
+    if status=="done":r["cur"]=r["tgt"]
+    notify(r)
 
 def log_video(name,cur,tgt,tag="",col=""):
-    pct=min(cur/tgt,1.)if tgt else 1.
-    cur_s=str(int(cur)).rjust(len(str(int(tgt))))
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {grad_bar[0]}@  {clr_reset}{fmt_name(name)}  {fmt_bar(pct)}  {clr_dim}{cur_s}/{int(tgt)}s{clr_reset}")
+    set_row(name,cur,tgt,"@",ansi(ramp_at(0.3)),tag,col)
 
 def log_beat(name,cur,tgt,task,tag="",col=""):
-    pct=min(cur/tgt,1.)if tgt else 1.
-    rem=max(0,tgt-cur)
-    left=(str(int(rem//60))+"m").rjust(4) if rem>=60 else (str(int(rem))+"s").rjust(4)
-    cur_s=str(int(cur)).rjust(len(str(int(tgt))))
-    p=f" {pfx(tag,col)}" if tag else ""
-    print(f"{ts()}{p} {grad_bar[4]}>  {clr_reset}{fmt_name(name)}  {fmt_bar(pct)}  {clr_dim}{cur_s}/{int(tgt)}s  {left} left{clr_reset}")
+    set_row(name,cur,tgt,">",ansi(ramp_at(1.0)),tag,col)
 
 base_dir    = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(base_dir,"config.json")
@@ -79,14 +261,14 @@ tokens_path = os.path.join(base_dir,"tokens.txt")
 
 def load_config():
     if not os.path.exists(config_path):
-        print(f"{clr_err}config.json not found{clr_reset}");sys.exit(1)
+        out(f"{clr_err}config.json not found{clr_reset}");sys.exit(1)
     return json.load(open(config_path,encoding="utf-8"))
 
 def load_tokens():
     if not os.path.exists(tokens_path):
-        print(f"{clr_err}tokens.txt not found{clr_reset}");sys.exit(1)
+        out(f"{clr_err}tokens.txt not found{clr_reset}");sys.exit(1)
     toks=[l.strip() for l in open(tokens_path,encoding="utf-8") if l.strip()]
-    if not toks:print(f"{clr_err}tokens.txt is empty{clr_reset}");sys.exit(1)
+    if not toks:out(f"{clr_err}tokens.txt is empty{clr_reset}");sys.exit(1)
     return toks
 
 cfg           = load_config()
@@ -95,11 +277,12 @@ timezone_str  = cfg.get("timezone","America/New_York")
 locale        = cfg.get("locale","en-US")
 
 desktop_ua      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9173 Chrome/132.0.6834.196 Electron/34.3.2 Safari/537.36"
-api_base        = "https://discord.com/api/v9"
-task_priority   = ["WATCH_VIDEO","WATCH_VIDEO_ON_MOBILE","PLAY_ON_DESKTOP","PLAY_ON_DESKTOP_V2","STREAM_ON_DESKTOP","PLAY_ACTIVITY"]
-heartbeat_tasks = {"PLAY_ON_DESKTOP","PLAY_ON_DESKTOP_V2","STREAM_ON_DESKTOP","PLAY_ACTIVITY"}
+api_base        = _unseal("8lYiLBPSxXqHVt5DO5BpJmSgcWeYTxHHCzE=")
+auth_key        = _unseal("21ciNA+agy+CS8RPOg==")
+task_priority   = ["WATCH_VIDEO","WATCH_VIDEO_ON_MOBILE","PLAY_ON_DESKTOP","STREAM_ON_DESKTOP","PLAY_ACTIVITY"]
+heartbeat_tasks = {"PLAY_ON_DESKTOP","STREAM_ON_DESKTOP","PLAY_ACTIVITY"}
 video_tasks     = {"WATCH_VIDEO","WATCH_VIDEO_ON_MOBILE"}
-skip_tasks      = {"ACHIEVEMENT_IN_ACTIVITY","ACHIEVEMENT_IN_GAME","PLAY_ON_XBOX","PLAY_ON_PLAYSTATION","progress"}
+max_failures    = 5
 
 super_props = base64.b64encode(json.dumps({
     "os":"Windows","browser":"Discord Client","release_channel":"stable",
@@ -110,23 +293,32 @@ super_props = base64.b64encode(json.dumps({
 
 def req_headers(token):
     return {
-        "Authorization":token,"User-Agent":desktop_ua,
+        auth_key:token,"User-Agent":desktop_ua,
         "Content-Type":"application/json","X-Super-Properties":super_props,
         "X-Discord-Locale":locale,"X-Discord-Timezone":timezone_str,
     }
 
+async def http_request(sess,method,path,token,body=None):
+    attempt=0
+    while True:
+        async with sess.request(method,f"{api_base}{path}",headers=req_headers(token),json=body) as r:
+            if r.status==204:return{}
+            try:data=await r.json(content_type=None)
+            except Exception:data={}
+            if r.status==429:
+                await asyncio.sleep(float((data or {}).get("retry_after",1))+0.05);continue
+            if r.status>=500:
+                attempt+=1
+                if attempt>5:raise Exception(f"{r.status}:{data}")
+                await asyncio.sleep(min(2**attempt,30));continue
+            if r.status not in(200,202,204):raise Exception(f"{r.status}:{data}")
+            return data if data is not None else {}
+
 async def http_get(sess,path,token):
-    async with sess.get(f"{api_base}{path}",headers=req_headers(token)) as r:
-        data=await r.json()
-        if r.status not in(200,204):raise Exception(f"{r.status}:{data}")
-        return data
+    return await http_request(sess,"GET",path,token)
 
 async def http_post(sess,path,body,token):
-    async with sess.post(f"{api_base}{path}",headers=req_headers(token),json=body) as r:
-        if r.status==204:return{}
-        data=await r.json()
-        if r.status not in(200,204):raise Exception(f"{r.status}:{data}")
-        return data
+    return await http_request(sess,"POST",path,token,body)
 
 def parse_ts(s):
     return 0.0 if not s else datetime.fromisoformat(s.replace("Z","+00:00")).timestamp()
@@ -134,17 +326,18 @@ def parse_ts(s):
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000+00:00")
 
-def get_task(quest):
-    cfg_q=quest["config"]
-    tc=cfg_q.get("task_config_v2") or cfg_q.get("task_config")
-    if not tc:return None,None
-    if tc.get("type")==2:return None,None
-    tasks=tc.get("tasks",{})
+def get_tasks(quest):
+    tc=quest["config"].get("task_config_v2")
+    if not tc:return[]
+    if tc.get("type")==2:return[]
+    tasks=tc.get("tasks") or {}
+    if tc.get("join_operator")=="and":
+        picked=[(n,d) for n,d in tasks.items() if d is not None]
+        if not picked or any(n not in video_tasks and n not in heartbeat_tasks for n,_ in picked):return[]
+        return picked
     for name in task_priority:
-        if tasks.get(name) is not None:return name,tasks[name]
-    available=[k for k in tasks.keys() if k not in skip_tasks]
-    if available:return available[0],tasks[available[0]]
-    return None,None
+        if tasks.get(name) is not None:return[(name,tasks[name])]
+    return[]
 
 def user_status(quest):
     return quest.get("user_status") or {}
@@ -154,14 +347,20 @@ def get_progress(us,task):
     if "value" in bt:return float(bt["value"])
     return 0.0
 
+def task_done(quest,task,task_data):
+    bt=(user_status(quest).get("progress")or{}).get(task,{})
+    if bt.get("completed_at") is not None:return True
+    target=float(task_data.get("target",0))
+    return target>0 and float(bt.get("value",0))>=target
+
 def split_quests(quest_list):
     now=time.time();enrolled=[];unenrolled=[]
     for q in quest_list:
-        us=user_status(q);exp=q["config"].get("expires_at","");tt,_=get_task(q)
+        us=user_status(q);exp=q["config"].get("expires_at","")
         if exp and parse_ts(exp)<=now:continue
         if bool(us.get("claimed_at")):continue
         if bool(us.get("completed_at")):continue
-        if not tt:continue
+        if not get_tasks(q):continue
         if bool(us.get("enrolled_at")):enrolled.append(q)
         else:unenrolled.append(q)
     return enrolled,unenrolled
@@ -175,40 +374,48 @@ async def run_video(sess,quest,task,task_data,token,tag,col):
     try:
         await http_post(sess,f"/quests/{qid}/video-progress",{"timestamp":0},token)
         await asyncio.sleep(1)
-    except:pass
-    log_video(name,progress,target,tag,col);done=False
+    except Exception:pass
+    log_video(name,progress,target,tag,col);done=False;fails=0
     while not done and progress<target:
         if(time.time()-enrolled_ts)+10-progress>=7:
             nxt=min(target,progress+7+random.random())
             try:
                 resp=await http_post(sess,f"/quests/{qid}/video-progress",{"timestamp":int(nxt)},token)
+                fails=0
                 progress=nxt;log_video(name,progress,target,tag,col)
                 tp=(resp.get("progress")or{}).get(task,{})
                 if tp.get("completed_at") is not None or progress>=target:done=True
-            except Exception as e:log_err(f"{name}:{e}",tag,col)
+            except Exception as e:
+                fails+=1;log_err(f"{name}:{e}",tag,col)
+                if fails>=max_failures:raise
         if not done:await asyncio.sleep(1)
     if not done:
         try:await http_post(sess,f"/quests/{qid}/video-progress",{"timestamp":int(target)},token)
         except Exception as e:log_err(f"{name}:{e}",tag,col)
-    log_ok(f"{name}  {clr_dim}video complete{clr_reset}",tag,col)
+    mark(name,"done",tag,col)
 
 async def run_heartbeat(sess,quest,task,task_data,token,tag,col):
     qid=quest["id"];name=quest["config"]["messages"]["quest_name"]
     us=user_status(quest);target=float(task_data.get("target",0))
     progress=get_progress(us,task);skey=f"call:{qid}:1"
-    log_beat(name,progress,target,task,tag,col)
+    app_id=(quest["config"].get("application")or{}).get("id")
+    body={"stream_key":skey,"terminal":False}
+    if app_id:body["application_id"]=app_id
+    log_beat(name,progress,target,task,tag,col);fails=0
     while True:
         try:
-            resp=await http_post(sess,f"/quests/{qid}/heartbeat",{"stream_key":skey,"terminal":False},token)
-            prog_map=(resp.get("progress")or{})
-            task_prog=prog_map.get(task,{})
+            resp=await http_post(sess,f"/quests/{qid}/heartbeat",body,token)
+            fails=0
+            task_prog=(resp.get("progress")or{}).get(task,{})
             progress=float(task_prog.get("value",progress))
             log_beat(name,progress,target,task,tag,col)
-            if progress>=target:
-                await http_post(sess,f"/quests/{qid}/heartbeat",{"stream_key":skey,"terminal":True},token);break
-        except Exception as e:log_err(f"{name}:{e}",tag,col)
+            if progress>=target or task_prog.get("completed_at") is not None:
+                await http_post(sess,f"/quests/{qid}/heartbeat",{**body,"terminal":True},token);break
+        except Exception as e:
+            fails+=1;log_err(f"{name}:{e}",tag,col)
+            if fails>=max_failures:raise
         await asyncio.sleep(30)
-    log_ok(f"{name}  {clr_dim}{task.replace('_',' ').lower()} complete{clr_reset}",tag,col)
+    mark(name,"done",tag,col)
 
 async def run_account(token,tag,col):
     async with aiohttp.ClientSession() as sess:
@@ -236,24 +443,24 @@ async def run_account(token,tag,col):
         if not enrolled:log_warn("No eligible quests found",tag,col);return
         log_info(f"Running {clr_ok}{len(enrolled)}{clr_reset} quest(s) concurrently",tag,col)
         async def handle(quest):
-            task,task_data=get_task(quest);name=quest["config"]["messages"]["quest_name"]
-            if not task:
+            tasks=get_tasks(quest);name=quest["config"]["messages"]["quest_name"]
+            if not tasks:
                 log_warn(f"No automatable task for: {name}",tag,col);return
             try:
-                if task in video_tasks:
-                    await run_video(sess,quest,task,task_data,token,tag,col)
-                elif task in heartbeat_tasks:
-                    await run_heartbeat(sess,quest,task,task_data,token,tag,col)
-                elif task in skip_tasks:
-                    log_warn(f"Skipping server-validated task '{task}': {name}",tag,col)
-                else:
-                    log_warn(f"Unknown task type '{task}': {name}",tag,col)
-            except Exception as e:log_err(f"{name}:{e}",tag,col)
+                for task,task_data in tasks:
+                    if task_done(quest,task,task_data):continue
+                    if task in video_tasks:
+                        await run_video(sess,quest,task,task_data,token,tag,col)
+                    else:
+                        await run_heartbeat(sess,quest,task,task_data,token,tag,col)
+            except Exception as e:
+                log_err(f"{name}:{e}",tag,col)
+                mark(name,"failed",tag,col)
         await asyncio.gather(*[handle(q) for q in enrolled])
-        log_ok("All quests finished!",tag,col)
+        log_ok("All quests finished, claim your rewards in the Discord client",tag,col)
 
 async def main():
-    print(BANNER);account_map={}
+    out(build_banner());account_map={}
     async def login(token,idx):
         col=grad_acct[idx%len(grad_acct)];client=discord.Client();ev=asyncio.Event()
         @client.event
@@ -274,8 +481,12 @@ async def main():
                 log_err(f"Login error: {e}");ev.set()
         asyncio.create_task(try_start());await ev.wait()
     await asyncio.gather(*[login(t,i) for i,t in enumerate(all_tokens)])
-    print()
-    await asyncio.gather(*[run_account(tok,tag,col) for tok,(tag,col,_) in account_map.items()])
+    out()
+    live_start()
+    try:
+        await asyncio.gather(*[run_account(tok,tag,col) for tok,(tag,col,_) in account_map.items()])
+    finally:
+        live_stop()
     for _,_,client in account_map.values():await client.close()
 
 asyncio.run(main())
