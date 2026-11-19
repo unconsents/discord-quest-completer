@@ -44,7 +44,7 @@ discord.py-self
 ## Installation
 
 ```bash
-git clone https://github.com/saint-tools/auto-quest-completer.git
+git clone https://github.com/saint-tools/discord-quest-completer.git
 cd auto-quest-completer
 pip install -r requirements.txt
 ```
