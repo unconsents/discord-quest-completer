@@ -45,8 +45,8 @@ discord.py-self
 
 ```bash
 git clone https://github.com/saint-tools/discord-quest-completer.git
-cd auto-quest-completer
-pip install -r requirements.txt
+cd discord-quest-completer
+pip install -r requirements.txt (not required anymore since auto install)
 ```
 
 Running `pip install -r requirements.txt` is optional. The script installs anything missing on first launch.
